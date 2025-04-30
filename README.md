@@ -179,6 +179,12 @@ if (isset($_GET['file'])) {
 ~~~
 Como vemos ya no nos deja meter direcciones url, ya que aplicamos un filtro de validación de URLs.
 
+Introducimos la siguiente dirección y obtenemos el siguiente resultado: 
+
+```
+http://localhost/RFI/rfi.php
+```
+
 ![](images/rfi3.png)
 
 Sin embargo, esta solución no es suficiente, ya que aún permite archivos locales maliciosos.
